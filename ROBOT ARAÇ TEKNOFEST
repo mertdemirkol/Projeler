@@ -1,0 +1,358 @@
+#include <ESP32Servo.h>
+#include <SPI.h>
+#include <nRF24L01.h>
+#include <RF24.h>
+#include "deneyap.h" 
+#include<Wire.h>
+#include"Adafruit_PWMServoDriver.h"
+
+
+
+
+#define CE_PIN D9 
+#define CSN_PIN D8
+#define motor1A  D12 
+#define motor1B D13
+#define motor2A  D14
+#define motor2B D15
+#define motor1hiz D0
+#define motor2hiz D1
+
+#define SERVOMIN 125// Minimum pulse length count (for servo motor)
+#define SERVOMAX 575 // Maximum pulse length count (for servo motor)
+#define MIDPOINT 275 
+
+uint16_t currentPosition = (SERVOMIN + SERVOMAX) / 2; // Başlangıçta orta konumda
+
+const uint64_t pipee = 0xE8E8F0F0E1LL; // adres
+
+RF24 radio(CE_PIN, CSN_PIN);
+int deger=280; //eklem 0 için başlangıç değeri
+int veriler1[6]; // İlk veri seti
+int veriler2[6]; // İkinci veri seti
+int verilerim[12];  //iki verinin toplamı
+int hassiyetdurum = 0; //hassasiyet butonuna tıklanıp tıklanmadığını anlamak 
+int x = 0; // hassasiyet için oluşturulan değişken
+int hassasiyetlimi = 0; 
+int arackoldurum = 0;
+int a = 0;
+int b = 0;
+int tutmacdurum=0;
+int tutmacdeger=180; //tutmac için başlangıç degeri
+
+int koldeger=150;// 1. eklem için başlangıç degeri
+int koldeger3eklem=0; //koldaki tutmaç kısmının yukarı aşagı hareket etmesini sağlayan eklemın baslangıç degeri
+
+
+
+ int koldeger2eklem =90;
+Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver();
+
+
+
+void setup() {
+  Serial.begin(9600);
+  delay(1000);
+  pinMode(motor1A, OUTPUT);
+  pinMode(motor1B, OUTPUT);
+  pinMode(motor2A, OUTPUT);
+  pinMode(motor2B, OUTPUT);
+  pinMode(motor1hiz, OUTPUT);
+  pinMode(motor2hiz, OUTPUT);
+
+  ledcSetup(0, 30000, 8);
+  ledcSetup(1, 30000, 8);
+  ledcAttachPin(motor1hiz, 0);
+  ledcAttachPin(motor2hiz, 1);
+  
+
+  Serial.println("Nrf24L01 Alıcı Başlatılıyor");
+  radio.begin();
+  radio.openReadingPipe(1, pipee);
+  radio.startListening();
+  Serial.println("Alıcı dinlenmeye başladı");
+  pwm.begin();
+  pwm.setPWMFreq(60);  // Servo motorlar genellikle 60 Hz PWM sinyali ile çalışır
+  
+  delay(500);
+}
+
+void loop() {
+  if (radio.available()) {
+    // İlk veri setini al
+    radio.read(&veriler1, sizeof(veriler1));
+    Serial.println("Veri 1 alındı");
+  delay(10);
+    // İkinci veri setini al
+    radio.read(&veriler2, sizeof(veriler2));
+    Serial.println("Veri 2 alındı");
+   delay(10);
+    // Verileri birleştir
+    memcpy(verilerim, veriler1, sizeof(veriler1));
+    memcpy(verilerim + 6, veriler2, sizeof(veriler2));
+ 
+    // Gelen verileri seri monitörde yazdır
+    Serial.print("Alınan Veriler: ");
+    for (int i = 0; i < 12; i++) {
+      Serial.print(verilerim[i]);
+      Serial.print(" ");
+
+    }
+    Serial.println();
+
+    // Araç hassasiyet durumu
+    int hassasiyetDegisim = verilerim[5];
+
+    if (hassasiyetDegisim == 1 && x == 0) {
+      x = 1;
+      hassasiyetlimi = !hassasiyetlimi;  // Durum değiştirme
+    }
+
+    if (hassasiyetlimi == 1) {
+     ledcWrite(0, 185);
+     ledcWrite(1, 185);
+     Serial.println("Araç hassasiyet aktif");
+      
+    } else {
+      //*
+       ledcWrite(0, 220);
+       ledcWrite(1, 220);
+       Serial.println("Araç normal sürüş modunda"); 
+    }
+
+    if (hassasiyetDegisim == 0 && x == 1) {
+      x = 0;
+    }
+  }
+// araç kol değişim
+ int arackolDegisim = verilerim[4];
+
+    if (arackolDegisim == 1 && a == 0) {
+      a = 1;
+      arackoldurum = !arackoldurum;  // Durum değiştirme
+    }
+
+    if (arackoldurum == 1) {
+      kolkontrol();
+      Serial.println("Araç kol aktif");
+    } else {
+      arabahareket();
+      Serial.println("Araç sürüş aktif halinde");
+    }
+
+    if (arackolDegisim == 0 && a == 1) {
+      a = 0;
+    }
+  
+   
+
+
+  delay(100); // Gecikme süresi optimize edildi
+}
+
+void arabahareket() {
+ 
+
+  int ilerigeri = verilerim[2];
+  int sagsol = verilerim[1];
+
+  Serial.println("Sonuc:");
+  Serial.println(ilerigeri);
+
+  if (ilerigeri > 4000) {
+     if (hassasiyetlimi == 1) {
+     ledcWrite(0, 170);
+     ledcWrite(1, 170);
+     Serial.println("Araç hassasiyet aktif");
+      
+    }
+      digitalWrite(motor1A, 0);
+    digitalWrite(motor1B, 1);
+    digitalWrite(motor2A, 1);
+    digitalWrite(motor2B, 0);
+    Serial.println("İleri");
+  } else if (ilerigeri < 5) {
+   
+      digitalWrite(motor1A, 1);
+    digitalWrite(motor1B, 0);
+    digitalWrite(motor2A, 0);
+    digitalWrite(motor2B, 1);
+     Serial.println("Geri");
+  } else {
+    digitalWrite(motor1A, 0);
+    digitalWrite(motor1B, 0);
+    digitalWrite(motor2A, 0);
+    digitalWrite(motor2B, 0);
+    Serial.println("Dur");
+  }
+
+  if (sagsol > 4000) {
+   
+     digitalWrite(motor1A, 1);
+    digitalWrite(motor1B, 0);
+    digitalWrite(motor2A, 1);
+    digitalWrite(motor2B, 0);
+
+    Serial.println("Sol");
+  }  if (sagsol < 5) {
+     
+    digitalWrite(motor1A, 0);
+    digitalWrite(motor1B, 1);
+    digitalWrite(motor2A, 0);
+    digitalWrite(motor2B, 1);    
+    Serial.println("Sağ");
+  
+
+  }
+}
+
+
+void kolkontrol() {
+    // Butonlar ve analog değerler
+    int kolsolButon = verilerim[7];
+    int kolyukariButon = verilerim[9];
+    int kolasagiButon = verilerim[10];
+    int kolsagButon = verilerim[8];
+    int joystick1 = verilerim[0];
+    int joystick2 = verilerim[2];
+    int buttonStatetutmac = verilerim[6];
+    int buttonStatetutmaciki = verilerim[11];
+
+  
+
+    // Veri kontrolü
+    if(verilerim[0] == 0 && verilerim[1] == 0  && verilerim[6] > 1000) {
+        Serial.println("veri hatası");
+    } else {
+        // Servo motorun pozisyon değiştirme adımı (hızı)
+        uint16_t step = 8;
+       
+
+        // Kol sola ve sağa hareketi
+        if (kolsolButon == 0 && kolsagButon == 0) {
+            // Her iki butona da basılmadığında servo motoru mevcut pozisyonda tut
+            pwm.setPWM(0, 0, 0);
+            Serial.println("kol sabit duruyor");
+        } else {
+            if (kolsolButon == 1) {
+                // Sola hareket et
+                deger += 7;  // Daha hızlı hareket etmek için büyük adımlar
+                if (deger > SERVOMAX) deger = SERVOMAX;  // Sınırı aşmaması için
+               
+                
+                Serial.println("kol sola dönüyor");
+                Serial.println(deger);
+                pwm.setPWM(0, 0,deger);
+            }
+
+            if (kolsagButon == 1) {
+                // Sağa hareket et
+                deger -= 7;  // Daha hızlı hareket etmek için büyük adımlar
+                if (deger < SERVOMIN) deger = SERVOMIN;  // Sınırı aşmaması için
+              
+                Serial.println("kol sağa dönüyor");
+                Serial.println(deger);
+                pwm.setPWM(0, 0, deger);
+            }
+             pwm.setPWM(0, 0, deger);
+        }
+
+        // Kol yukarı ve aşağı hareketi
+        if (kolasagiButon == 0 && kolyukariButon == 0) {
+            // Her iki butona da basılmadığında servo motoru mevcut pozisyonda tut
+            pwm.setPWM(4, 0, 0);
+            Serial.println("kol sabit duruyor");
+        } else {
+            if (kolasagiButon == 1) {
+                // Aşağı hareket et
+                koldeger3eklem += 15;  // Daha hızlı hareket etmek için büyük adımlar
+                if (koldeger3eklem > SERVOMAX) koldeger3eklem = SERVOMAX;  // Sınırı aşmaması için
+               
+                Serial.println("kol aşağı hareket ediyor");
+                Serial.println(koldeger3eklem);
+                pwm.setPWM(4, 0, koldeger3eklem);
+            }
+
+            if (kolyukariButon == 1) {
+                // Yukarı hareket et
+                koldeger3eklem -= 15;  // Daha hızlı hareket etmek için büyük adımlar
+                if (koldeger3eklem < SERVOMIN) koldeger3eklem = SERVOMIN;  // Sınırı aşmaması için
+                
+                Serial.println("kol yukarı hareket ediyor");
+                Serial.println(koldeger3eklem);
+                pwm.setPWM(4, 0, koldeger3eklem);
+            }
+            pwm.setPWM(4, 0, koldeger3eklem);
+        }
+
+        // Kol tutma hareketi
+        if (buttonStatetutmac == 0 && buttonStatetutmaciki == 0) {
+            // Her iki butona da basılmadığında servo motoru mevcut pozisyonda tut
+            pwm.setPWM(5, 0, 0);
+            Serial.println("kol sabit duruyor");
+        } else {
+            if (buttonStatetutmac == 1) {
+                // Tutma hareketi
+                tutmacdeger += 25;  // Daha hızlı hareket etmek için büyük adımlar
+                if (tutmacdeger > SERVOMAX) tutmacdeger = SERVOMAX;  // Sınırı aşmaması için
+              
+                Serial.println("kol aşağı hareket ediyor");
+                Serial.println(tutmacdeger);
+                pwm.setPWM(5, 0, tutmacdeger);
+            }
+
+            if (buttonStatetutmaciki == 1) {
+                // Serbest bırakma hareketi
+                tutmacdeger -= 25;  // Daha hızlı hareket etmek için büyük adımlar
+                if (tutmacdeger < SERVOMIN) tutmacdeger = SERVOMIN;  // Sınırı aşmaması için
+               
+                Serial.println("kol yukarı hareket ediyor");
+                Serial.println(tutmacdeger);
+                pwm.setPWM(5, 0, tutmacdeger);
+            }
+            pwm.setPWM(5, 0, tutmacdeger);
+        }
+
+        if (joystick1 < 5) {
+            koldeger += step;  // Daha hızlı hareket etmek için büyük adımlar
+            if (koldeger > SERVOMAX) koldeger = SERVOMAX;  // Sınırı aşmaması için
+            
+            Serial.println("kol aşağı hareket ediyor");
+            Serial.println(koldeger);
+            pwm.setPWM(1, 0, koldeger);
+            
+        } else if (joystick1 > 4000) {
+            koldeger -= step;  // Daha hızlı hareket etmek için büyük adımlar
+            if (koldeger < SERVOMIN) koldeger = SERVOMIN;  // Sınırı aşmaması için
+            
+            Serial.println("kol yukarı hareket ediyor");
+            Serial.println(koldeger);
+            pwm.setPWM(1, 0, koldeger);
+           
+        }
+
+        if (!(joystick1 < 1600 && joystick1 > 1800)) {
+            pwm.setPWM(1, 0, koldeger);  // Servo pozisyonunu ayarla
+        }
+
+        // joystick2 ile servo hareketi
+        if (joystick2 < 5) {
+            koldeger2eklem += 17;  //adım sayısı ile hassasiyet ayarı yapılabilir
+            if (koldeger2eklem > SERVOMAX) koldeger2eklem = SERVOMAX;  // Sınırı aşmaması için
+            
+            Serial.println("kol aşağı hareket ediyor");
+            Serial.println(koldeger2eklem);
+            pwm.setPWM(2, 0, koldeger2eklem);
+        } else if (joystick2 > 4000) {
+            koldeger2eklem -= 17;  //adım sayısı ile hassasiyet ayarı yapılabilir
+            if (koldeger2eklem < SERVOMIN) koldeger2eklem = SERVOMIN;  // Sınırı aşmaması için
+            Serial.println("kol yukarı hareket ediyor");
+            Serial.println(koldeger2eklem);
+            pwm.setPWM(2, 0, koldeger2eklem);
+        }
+
+        if (!(joystick2 < 1600 && joystick2 > 1800)) {
+            pwm.setPWM(2, 0, koldeger2eklem);  // Servo pozisyonunu ayarla
+        }
+    }
+}
