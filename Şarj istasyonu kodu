@@ -1,0 +1,314 @@
+#include <ESP8266WiFi.h>
+#include <DNSServer.h>
+#include <ESP8266WebServer.h>
+#include <LittleFS.h>
+#include <qrcode.h> 
+#include <Base64.h>  
+#define SSID_NAME "SARJ ISTASYONU"
+#define DNS_PORT 53
+#define HTTP_CODE 200
+#define TICK_TIMER 1000
+IPAddress APIP(172, 0, 0, 1);  
+
+
+String credentialsData = "";
+bool savedData = false;
+unsigned long bootTime = 0, lastActivity = 0, lastTick = 0;
+int timer = 5000;
+int i = 0;
+
+DNSServer dnsServer;
+ESP8266WebServer webServer(80);
+
+const char* chargingStationPage = R"rawliteral(
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Araç Şarj İstasyonu</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      background-color: #0a0a0a;
+      color: #fff;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    }
+
+    header {
+      background: #121212;
+      padding: 2rem;
+      text-align: center;
+      font-size: 1.8rem;
+      font-weight: bold;
+      color: #ffffff;
+      border-bottom: 1px solid #333;
+    }
+
+    .container {
+      max-width: 500px;
+      margin: 3rem auto;
+      background: linear-gradient(145deg, #111111, #1a1a1a);
+      padding: 2rem;
+      border-radius: 20px;
+      box-shadow: 0 0 10px #00ff88;
+    }
+
+    h2 {
+      text-align: center;
+      margin-bottom: 1rem;
+      color: #adff2f;
+    }
+
+    .status {
+      text-align: center;
+      margin-bottom: 1.5rem;
+      font-size: 1.1rem;
+      color: #ccc;
+    }
+
+    .form-group {
+      margin-bottom: 1rem;
+    }
+
+    label {
+      display: block;
+      margin-bottom: 0.3rem;
+      font-weight: bold;
+    }
+
+    input[type="text"],
+    input[type="number"],
+    select {
+      width: 100%;
+      padding: 0.5rem;
+      border-radius: 10px;
+      border: none;
+      background: #222;
+      color: #fff;
+      box-shadow: inset 0 0 5px #00ff88;
+    }
+
+    select {
+      appearance: none;
+    }
+
+    .btn {
+      width: 100%;
+      padding: 0.75rem;
+      background-color: #ccff00;
+      border: none;
+      border-radius: 999px;
+      font-weight: bold;
+      cursor: pointer;
+      transition: 0.3s ease;
+    }
+
+    .btn:hover {
+      background-color: #e6ff4d;
+    }
+
+    footer {
+      margin-top: 3rem;
+      padding: 1rem;
+      text-align: center;
+      color: #666;
+      font-size: 0.9rem;
+    }
+  </style>
+</head>
+<body>
+  <header>Araç Şarj İstasyonu Kontrol Paneli</header>
+  <div class="container">
+    <h2>Şarj Ayarları</h2>
+    <div class="status">Durum: <strong>Hazır</strong></div>
+    <form action="/post" method="post">
+      <div class="form-group"><label>İstasyon ID</label><input type="text" name="station_id" required></div>
+      <div class="form-group"><label>Güç (kW)</label><input type="number" name="power" required></div>
+      <div class="form-group"><label>Süre (dk)</label><input type="number" name="duration" required></div>
+      <div class="form-group"><label>Şarj Modu</label>
+        <select name="mode" required>
+          <option value="fast">Hızlı Şarj</option>
+          <option value="normal">Normal Şarj</option>
+          <option value="eco">Eko Mod</option>
+        </select>
+      </div>
+      <button type="submit" class="btn">Şarjı Başlat</button>
+    </form>
+  </div>
+  <footer>&copy; 2025 Şarj İstasyonu | ABC Teknoloji</footer>
+</body>
+</html>
+)rawliteral";
+
+
+String sanitizeInput(String input) {
+  input.replace("<", "&lt;");
+  input.replace(">", "&gt;");
+  return input;
+}
+
+
+void readData() {
+  File file = LittleFS.open("/SavedFile.txt", "r");
+  if (!file) return;
+  credentialsData = file.readString();
+  file.close();
+  if (credentialsData.length() > 0) savedData = true;
+}
+
+void writeData(const String& data) {
+  File file = LittleFS.open("/SavedFile.txt", "w");
+  if (file) {
+    file.print(data);
+    file.close();
+  }
+}
+
+void deleteData() {
+  LittleFS.remove("/SavedFile.txt");
+}
+
+
+String index() {
+  return String(chargingStationPage);
+}
+
+
+String posted() {
+  String stationID = sanitizeInput(webServer.arg("station_id"));
+  String power = sanitizeInput(webServer.arg("power"));
+  String duration = sanitizeInput(webServer.arg("duration"));
+  String mode = sanitizeInput(webServer.arg("mode"));
+
+  String newEntry = "<li><b>İstasyon:</b> " + stationID +
+                    ", <b>Güç:</b> " + power + " kW, <b>Süre:</b> " + duration +
+                    " dk, <b>Mod:</b> " + mode + "</li>";
+
+  Serial.println("Yeni Şarj Talebi:");
+  Serial.println(newEntry);
+
+  readData();
+  credentialsData += newEntry;
+  writeData(credentialsData);
+  savedData = true;
+
+
+  String qrPage = generateQRCode("http://"+APIP.toString()+"/charging");
+  return qrPage;
+}
+
+
+String creds() {
+  String html = "<html><body><h2>Kayıtlı Veriler</h2><ol>";
+  html += credentialsData;
+  html += "</ol><a href='/'>Geri</a> | <a href='/clear'>Temizle</a></body></html>";
+  return html;
+}
+
+
+String clear() {
+  credentialsData = "";
+  savedData = false;
+  deleteData();
+  return "<html><body><h2>Veriler temizlendi!</h2><a href='/'>Geri Dön</a></body></html>";
+}
+
+
+String generateQRCode(String text) {
+  QRCode qrcode;
+  uint8_t qrcodeData[qrcode_getBufferSize(3)];  // QR boyutu 3x3
+  qrcode_initText(&qrcode, qrcodeData, 3, 0, text.c_str());
+
+  String qrHTML = "<html><body><h2>Şarj Başlatıldı!</h2>";
+  qrHTML += "<p>Baslatmak icin karekodu telefonunuza okutun.</p><br><br>";
+
+  String base64QRCode = "1232443";  
+
+
+  for (int y = 0; y < 3; y++) {
+    for (int x = 0; x < 3; x++) {
+      if (qrcode_getModule(&qrcode, x, y)) {
+        base64QRCode += "1";  
+      } else {
+        base64QRCode += "0";  
+      }
+    }
+  }
+
+
+  qrHTML += "<img src='data:image/png;base64," + base64QRCode + "' />";  
+  qrHTML += "</body></html>";
+
+  return qrHTML;
+}
+
+
+void BLINK() {
+  for (int j = 0; j < 5; j++) {
+    digitalWrite(LED_BUILTIN, LOW);
+    delay(500);
+    digitalWrite(LED_BUILTIN, HIGH);
+    delay(500);
+  }
+}
+
+void setup() {
+  bootTime = lastActivity = millis();
+  Serial.begin(115200);
+  pinMode(LED_BUILTIN, OUTPUT);
+  digitalWrite(LED_BUILTIN, HIGH);
+
+  if (!LittleFS.begin()) {
+    Serial.println("LittleFS mount failed");
+    return;
+  }
+
+  readData();
+
+  WiFi.mode(WIFI_AP);
+  WiFi.softAPConfig(APIP, APIP, IPAddress(255, 255, 255, 0));
+  WiFi.softAP(SSID_NAME);
+
+  dnsServer.start(DNS_PORT, "*", APIP);
+
+  webServer.on("/", []() {
+    webServer.send(HTTP_CODE, "text/html", index());
+  });
+  webServer.on("/post", HTTP_POST, []() {
+    webServer.send(HTTP_CODE, "text/html", posted());
+    BLINK();
+  });
+  webServer.on("/creds", []() {
+    webServer.send(HTTP_CODE, "text/html", creds());
+  });
+  webServer.on("/clear", []() {
+    webServer.send(HTTP_CODE, "text/html", clear());
+  });
+  webServer.on("/charging", []() {
+    String qrPage = generateQRCode("http://"+APIP.toString());
+    webServer.send(HTTP_CODE, "text/html", qrPage);
+  });
+  webServer.onNotFound([]() {
+    webServer.send(HTTP_CODE, "text/html", index());
+  });
+
+  webServer.begin();
+  Serial.println("Captive portal çalıştı.");
+}
+
+void loop() {
+  if ((millis() - lastTick) > TICK_TIMER) lastTick = millis();
+  dnsServer.processNextRequest();
+  webServer.handleClient();
+
+  i++;
+  if (i >= timer && savedData) {
+    i = 0;
+    digitalWrite(LED_BUILTIN, LOW);
+    delay(50);
+    digitalWrite(LED_BUILTIN, HIGH);
+  }
+  if (i > timer) i = 0;
+}
