@@ -6,5 +6,8 @@
  2- Klon wifi ağı ile sahte ağlara karşı bilinçlendirme projesi : https://github.com/mertdemirkol/Projeler/blob/main/projeg%C3%B6rseli.png
 
  3-TEKNOFEST ARAÇ : https://github.com/mertdemirkol/Projeler/blob/main/robot.jpg
+
+
+- DERSMANYA 2025 YKS ÇALIŞMA UYGULAMASI : https://play.google.com/store/apps/details?id=com.demirkol.yks_lgsdersprogramm&hl=tr
      
     
